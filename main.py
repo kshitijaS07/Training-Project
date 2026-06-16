@@ -1,100 +1,157 @@
-# app.py
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import create_engine, String, select
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
+from sqlalchemy import create_engine, String
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 
-# ==========================================
-# 1. DATABASE SETUP (SQLAlchemy)
-# ==========================================
-# 'check_same_thread': False is required for SQLite when used with FastAPI
-engine = create_engine("sqlite:///fastapi_users.db", connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# ==========================
+# DATABASE
+# ==========================
+
+DATABASE_URL = "sqlite:///blogs.db"
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False}
+)
 
 class Base(DeclarativeBase):
     pass
 
-class User(Base):
-    __tablename__ = "users"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(30))
-    email: Mapped[str] = mapped_column(String(50), unique=True)
+class Blog(Base):
+    __tablename__ = "blogs"
 
-# Create the tables
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(String(5000))
+    author: Mapped[str] = mapped_column(String(100))
+
 Base.metadata.create_all(bind=engine)
 
-# ==========================================
-# 2. DATA VALIDATION (Pydantic)
-# ==========================================
-# Schema for creating a user (User sends this)
-class UserCreate(BaseModel):
-    name: str
-    email: str
+# ==========================
+# PYDANTIC SCHEMAS
+# ==========================
 
-# Schema for reading a user (API returns this)
-class UserResponse(BaseModel):
+class BlogCreate(BaseModel):
+    title: str
+    content: str
+    author: str
+
+class BlogResponse(BlogCreate):
     id: int
-    name: str
-    email: str
 
     class Config:
-        from_attributes = True  # Allows Pydantic to read SQLAlchemy objects
+        from_attributes = True
 
-# ==========================================
-# 3. FASTAPI APPLICATION
-# ==========================================
-app = FastAPI()
+# ==========================
+# FASTAPI APP
+# ==========================
 
-# Dependency: Opens a database session for each request and closes it after
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+app = FastAPI(title="Blog API")
 
-# --- CREATE ---
-@app.post("/users/", response_model=UserResponse)
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    # Check if email already exists
-    stmt = select(User).where(User.email == user.email)
-    existing_user = db.scalars(stmt).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create and save new user
-    db_user = User(name=user.name, email=user.email)
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user) # Retrieves the newly generated ID
-    return db_user
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# --- READ ALL ---
-@app.get("/users/", response_model=list[UserResponse])
-def read_users(db: Session = Depends(get_db)):
-    users = db.scalars(select(User)).all()
-    return users
+# ==========================
+# CREATE BLOG
+# ==========================
 
-# --- UPDATE ---
-@app.put("/users/{user_id}", response_model=UserResponse)
-def update_user(user_id: int, updated_user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.get(User, user_id)
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    db_user.name = updated_user.name
-    db_user.email = updated_user.email
-    db.commit()
-    db.refresh(db_user)
-    return db_user
+@app.post("/blogs", response_model=BlogResponse)
+def create_blog(blog: BlogCreate):
 
-# --- DELETE ---
-@app.delete("/users/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db)):
-    db_user = db.get(User, user_id)
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    db.delete(db_user)
-    db.commit()
-    return {"message": f"User {user_id} deleted successfully"}
+    with Session(engine) as session:
+        new_blog = Blog(
+            title=blog.title,
+            content=blog.content,
+            author=blog.author
+        )
+
+        session.add(new_blog)
+        session.commit()
+        session.refresh(new_blog)
+
+        return new_blog
+
+# ==========================
+# GET ALL BLOGS
+# ==========================
+
+@app.get("/blogs", response_model=list[BlogResponse])
+def get_blogs():
+
+    with Session(engine) as session:
+        blogs = session.query(Blog).all()
+        return blogs
+
+# ==========================
+# GET SINGLE BLOG
+# ==========================
+
+@app.get("/blogs/{blog_id}", response_model=BlogResponse)
+def get_blog(blog_id: int):
+
+    with Session(engine) as session:
+        blog = session.get(Blog, blog_id)
+
+        if not blog:
+            raise HTTPException(
+                status_code=404,
+                detail="Blog not found"
+            )
+
+        return blog
+
+# ==========================
+# UPDATE BLOG
+# ==========================
+
+@app.put("/blogs/{blog_id}", response_model=BlogResponse)
+def update_blog(blog_id: int, updated_blog: BlogCreate):
+
+    with Session(engine) as session:
+
+        blog = session.get(Blog, blog_id)
+
+        if not blog:
+            raise HTTPException(
+                status_code=404,
+                detail="Blog not found"
+            )
+
+        blog.title = updated_blog.title
+        blog.content = updated_blog.content
+        blog.author = updated_blog.author
+
+        session.commit()
+        session.refresh(blog)
+
+        return blog
+
+# ==========================
+# DELETE BLOG
+# ==========================
+
+@app.delete("/blogs/{blog_id}")
+def delete_blog(blog_id: int):
+
+    with Session(engine) as session:
+
+        blog = session.get(Blog, blog_id)
+
+        if not blog:
+            raise HTTPException(
+                status_code=404,
+                detail="Blog not found"
+            )
+
+        session.delete(blog)
+        session.commit()
+
+        return {
+            "message": "Blog deleted successfully"
+        }
